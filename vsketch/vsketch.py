@@ -13,6 +13,7 @@ from shapely.geometry import Polygon
 from .curves import quadratic_bezier_path, quadratic_bezier_point, quadratic_bezier_tangent
 from .display import display
 from .fill import generate_fill
+from .shape import Shape
 from .style import stylize_path
 from .utils import MatrixPopper, ResetMatrixContextManager, complex_to_2d, compute_ellipse_mode
 
@@ -26,7 +27,6 @@ class Vsketch:
         self._cur_stroke: Optional[int] = 1
         self._stroke_weight: int = 1
         self._cur_fill: Optional[int] = None
-        self._pipeline = ""
         self._figure = None
         self._transform_stack = [np.empty(shape=(3, 3), dtype=float)]
         self._page_format = vp.convert_page_format("a3")
@@ -44,20 +44,9 @@ class Vsketch:
         self._random.seed(random.randint(0, 2 ** 31))
         self.resetMatrix()
 
-        # we cache the processed vector data to make sequence of plot() and write() faster
-        # the cache must be invalidated (ie. _processed_vector_data set to None) each time
-        # _vector_data or _pipeline changes
-        self._processed_vector_data: Optional[vp.VectorData] = None
-
     @property
     def vector_data(self):
         return self._vector_data
-
-    @property
-    def processed_vector_data(self):
-        if self._processed_vector_data is None:
-            self._apply_pipeline()
-        return self._processed_vector_data
 
     @property
     def width(self) -> float:
@@ -717,7 +706,7 @@ class Vsketch:
             Or they can be set for a single call only:
 
                 >>> vsk.rect(2, 2, 10, 12, mode="corners")
-            
+
             Drawing rectangles with rounded corners:
 
                 >>> vsk.rect(0, 0, 5, 5, 5)  # all corners are rounded with a radius of 5
@@ -898,7 +887,7 @@ class Vsketch:
 
     def polygon(
         self,
-        x: Union[Iterable[float], Iterable[Sequence[float]]],
+        x: Union[Iterable[float], Iterable[Sequence[float]], Iterable[complex]],
         y: Optional[Iterable[float]] = None,
         holes: Iterable[Iterable[Sequence[float]]] = (),
         close: bool = False,
@@ -1094,6 +1083,14 @@ class Vsketch:
             "bezierDetail() is not implemented, see detail() for more information"
         )
 
+    def createShape(self) -> Shape:
+        return Shape(self)
+
+    def shape(self, shp: Shape):
+        p, mls = shp.compile()
+        self.geometry(p)
+        self.geometry(mls)
+
     def sketch(self, sub_sketch: "Vsketch") -> None:
         """Draw the content of another Vsketch.
 
@@ -1112,9 +1109,6 @@ class Vsketch:
         Args:
             sub_sketch: sketch to draw in the current sketch
         """
-
-        # invalidate the cache
-        self._processed_vector_data = None
 
         for layer_id, layer in sub_sketch._vector_data.layers.items():
             lc = vp.LineCollection([self._transform_line(line) for line in layer])
@@ -1296,7 +1290,7 @@ class Vsketch:
             fig_size: (``"matplotlib"`` only) specify the figure size
         """
         display(
-            self.processed_vector_data,
+            self.vector_data,
             page_format=self._page_format if paper else None,
             mode=mode,
             center=self._center_on_page,
@@ -1384,7 +1378,7 @@ class Vsketch:
         if format == "svg":
             vp.write_svg(
                 file,
-                self.processed_vector_data,
+                self.vector_data,
                 self._page_format,
                 self._center_on_page,
                 color_mode=color_mode,
@@ -1404,7 +1398,7 @@ class Vsketch:
 
             vp.write_hpgl(
                 file,
-                self.processed_vector_data,
+                self.vector_data,
                 page_format=paper_format,
                 landscape=self._page_format[0] > self._page_format[1],
                 center=self._center_on_page,
@@ -1416,24 +1410,6 @@ class Vsketch:
             raise ValueError(
                 f"unknown format '{format}', specify format with 'format' argument "
             )
-
-    def _apply_pipeline(self):
-        """Apply the current pipeline on the current vector data."""
-
-        @vpype_cli.cli.command(group="vsketch")
-        @vp.global_processor
-        def vsketchinput(vector_data):
-            vector_data.extend(self._vector_data)
-            return vector_data
-
-        @vpype_cli.cli.command(group="vsketch")
-        @vp.global_processor
-        def vsketchoutput(vector_data):
-            self._processed_vector_data = vector_data
-            return vector_data
-
-        args = "vsketchinput " + self._pipeline + " vsketchoutput"
-        vpype_cli.cli.main(prog_name="vpype", args=shlex.split(args), standalone_mode=False)
 
     ####################
     # RANDOM FUNCTIONS #
